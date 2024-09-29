@@ -129,7 +129,7 @@ struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
 }
 
 int check_for_precision(double_t value, struct pi_bounds bounds){
-    if (CALC_DEBUG) {ESP_LOGI(TAG,"Current lower bound: %f, upper: %f", bounds.lower, bounds.upper);}
+    if (CALC_DEBUG) {ESP_LOGI(TAG,"Current lower bound: %.15lf, upper: %.15lf", bounds.lower, bounds.upper);}
     if ((value < bounds.upper) && (value > bounds.lower)){
         return 1;
     }else{
@@ -148,7 +148,7 @@ void CalcTaskA(struct pi_bounds * boundaries){
     xEventGroupSetBits(Calc_Eventgroup_A_hndl, state);
 
     g_running_ts_A.curr_val = 4.0;
-    g_running_ts_A.iters = 0;
+    g_running_ts_A.iters = 1;
 
     vTaskSetApplicationTaskTag(NULL, (void *) method);
 
@@ -173,7 +173,7 @@ void CalcTaskA(struct pi_bounds * boundaries){
             g_running_ts_A.start_tick_count = 0;
             g_running_ts_A.end_tick_count = 0;
             g_running_ts_A.curr_val = 4.0;
-            g_running_ts_A.iters = 0;
+            g_running_ts_A.iters = 1;
             divisor = 3;
             sign = -1;
             xEventGroupClearBits(Calc_Eventgroup_A_hndl, CLEAR_ALL);
@@ -187,8 +187,8 @@ void CalcTaskA(struct pi_bounds * boundaries){
             xEventGroupSetBits(Calc_Eventgroup_A_hndl, RUNNING);
             break;
         case RUNNING:
-            if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation A is running. Current value: %.12lf", g_running_ts_A.curr_val);}
-            if (CALC_DEBUG) {ESP_LOGI(TAG, "running sum: %1.12lf", running_sum);}
+            if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation A is running. Current value: %.19lf", g_running_ts_A.curr_val);}
+            if (CALC_DEBUG) {ESP_LOGI(TAG, "running sum: %1.15lf", running_sum);}
 
             running_sum = sign * (dividend/divisor);
             g_running_ts_A.curr_val += running_sum;
@@ -226,6 +226,7 @@ struct PQR bin_split(double_t a, double_t b){
         pqr_vals.Qab = pqr_am_vals.Qab * pqr_mb_vals.Qab;
         pqr_vals.Rab = pqr_mb_vals.Qab * pqr_am_vals.Rab + pqr_mb_vals.Rab * pqr_am_vals.Pab;
     }
+    if (CALC_DEBUG) {ESP_LOGI(TAG, "bin_split values: a:%.4lf    b:%.4lf  m:%.4lf", a, b, m);}
     return pqr_vals;
 }
 
@@ -235,7 +236,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
     //Notifies Logic Task when it has reached the requested precision
     struct PQR pqr_n_vals = {0.0,0.0,0.0};
     g_running_ts_B.curr_val = 0.0;
-    g_running_ts_B.iters = 0;
+    g_running_ts_B.iters = 1;
     EventBits_t state = STOPPED;
 
     xEventGroupSetBits(Calc_Eventgroup_B_hndl, state);
@@ -257,7 +258,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
         {
         case STOPPED:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation B is stopped.");}
-            vTaskSuspend(CalcTaskB_hndl);
+            vTaskSuspend(NULL);
             continue;
         
         case RESETTING:
@@ -265,7 +266,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.start_tick_count = 0;
             g_running_ts_B.end_tick_count = 0;
             g_running_ts_B.curr_val = 0.0;
-            g_running_ts_B.iters = 0;
+            g_running_ts_B.iters = 1;
             xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             vTaskDelay(UPDATETIME_MS/portTICK_PERIOD_MS);
@@ -279,8 +280,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
             break;
 
         case RUNNING:
-            if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation B is running. Current value:");}
-            if (CALC_DEBUG) {ESP_LOGI(TAG, "%lf", g_running_ts_B.curr_val);}
+            if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation B is running. Current value:%.19lf", g_running_ts_B.curr_val);}
 
             pqr_n_vals = bin_split(1.0, g_running_ts_B.iters + 1);
             g_running_ts_B.curr_val = (426880 * sqrt(10005) * pqr_n_vals.Qab) / (13591409 * pqr_n_vals.Qab + pqr_n_vals.Rab);
@@ -289,6 +289,12 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.iters++;
 
             if (check_for_precision(g_running_ts_B.curr_val, *boundaries)) {xTaskNotifyGive(DisplayTask_hndl);}
+
+            //This calculation turned out to be so fast that it would cause a stack overflow in the ESP32 within a few iterations, so it now just stops after 4.
+            if (g_running_ts_B.iters == 3) {
+                xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
+                xEventGroupSetBits(Calc_Eventgroup_B_hndl, RESETTING);
+            }
 
             vTaskDelay(1/portTICK_PERIOD_MS);
         }   
@@ -473,11 +479,11 @@ void DisplayTask(void* param) {
                 sprintf((char *)precA_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", calc_data.ms);
                 lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], GREEN);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A reached precision!");}
-                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.12lf, Time: %8li ms, iterations: %12li", calc_data.curr_val, calc_data.ms, calc_data.iters);}
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", calc_data.curr_val, calc_data.ms, calc_data.iters);}
             } else {
                 sprintf((char *)precA_reached_string, "Der Wert ist noch zu ungenau.");
-                if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A has not yet reached precision...");}
                 lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], RED);
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A has not yet reached precision...");}
             };
             break;
         case RESETTING:
@@ -500,9 +506,12 @@ void DisplayTask(void* param) {
                 if (prec_reached == 1) {calc_data = curr_pi_calcB_data;}
                 sprintf((char *)precB_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", calc_data.ms);
                 lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], GREEN);
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Method B reached precision!");}
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", calc_data.curr_val, calc_data.ms, calc_data.iters);}
             } else {
                 sprintf((char *)precB_reached_string, "Der Wert ist noch zu ungenau.");
                 lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], RED);
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Method B has not yet reached precision...");}
             };
             break;
         case RESETTING:
@@ -526,7 +535,7 @@ void DisplayTask(void* param) {
 
 void app_main()
 {
-    struct pi_bounds prec = PI_3DIGIT;
+    struct pi_bounds prec = PI_15DIGIT;
 
     //Initialize Eduboard2 BSP
     eduboard2_init();
@@ -544,7 +553,7 @@ void app_main()
     xTaskCreate(LogicTask,"Logic Task",2*2048,NULL,5,&LogicTask_hndl);
     xTaskCreate(DisplayTask,"Display Taks", 2*2048,NULL,4,&DisplayTask_hndl);
     xTaskCreate(CalcTaskA,"Calculation Task A",2*2048,&prec,2,&CalcTaskA_hndl);
-    xTaskCreate(CalcTaskB,"Calculation Task B",2*2048,&prec,2,&CalcTaskB_hndl);
+    xTaskCreate(CalcTaskB,"Calculation Task B",8*2048,&prec,2,&CalcTaskB_hndl);
 
     if (DEBUG_LOGS) {ESP_LOGI(TAG, "Tasks initialized");}
 
