@@ -73,17 +73,12 @@ static struct pi_bounds PI_15DIGIT =    {3.1415926535897939,3.141592653589793};
 
 struct timestamp{
     double_t curr_val;
-    uint32_t start_tick_count;
-    uint32_t end_tick_count;
+    u_int32_t start_tick_count;
+    u_int32_t end_tick_count;
     u_int32_t ms;
     u_int32_t iters;
-} g_running_ts_A, g_running_ts_B;
-
-struct PQR{
-    double_t Pab;
-    double_t Qab;
-    double_t Rab;
-};
+    bool reached_prec;
+} g_running_ts_A, g_running_ts_B, g_calc_result_A, g_calc_result_B;
 
 static TaskHandle_t
     DisplayTask_hndl = NULL,
@@ -105,7 +100,7 @@ typedef enum {
 
 struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
     // stops the indicated task and fetches the data
-    struct timestamp current_time = {0, 0, 0, 0, 0};
+    struct timestamp current_timestamp = {0, 0, 0, 0, 0, false};
     eTaskState curr_state = 0;
 
     curr_state = eTaskGetState(CalcTask_hndl);
@@ -117,15 +112,17 @@ struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
 
     switch (( int ) xTaskGetApplicationTaskTag(CalcTask_hndl)){
     case A:
-        current_time.curr_val = g_running_ts_A.curr_val;
-        current_time.ms = (g_running_ts_A.end_tick_count - g_running_ts_A.start_tick_count) * portTICK_PERIOD_MS;
-        current_time.iters = g_running_ts_A.iters;
+        current_timestamp.curr_val = g_running_ts_A.curr_val;
+        current_timestamp.ms = (g_running_ts_A.end_tick_count - g_running_ts_A.start_tick_count) * portTICK_PERIOD_MS;
+        current_timestamp.iters = g_running_ts_A.iters;
+        current_timestamp.reached_prec = g_running_ts_A.reached_prec;
         if (DEBUG_LOGS) { ESP_LOGI(TAG, "Taking Data from A."); }
         break;
     case B:
-        current_time.curr_val = g_running_ts_B.curr_val;
-        current_time.ms = (g_running_ts_B.end_tick_count - g_running_ts_B.start_tick_count) * portTICK_PERIOD_MS;
-        current_time.iters = g_running_ts_B.iters;
+        current_timestamp.curr_val = g_running_ts_B.curr_val;
+        current_timestamp.ms = (g_running_ts_B.end_tick_count - g_running_ts_B.start_tick_count) * portTICK_PERIOD_MS;
+        current_timestamp.iters = g_running_ts_B.iters;
+        current_timestamp.reached_prec = g_running_ts_B.reached_prec;
         if (DEBUG_LOGS) { ESP_LOGI(TAG, "Taking Data from B."); }
         break;
     }
@@ -135,7 +132,27 @@ struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
         vTaskResume(CalcTask_hndl); 
         }
 
-    return current_time;
+    return current_timestamp;
+}
+
+void copy_data_into_result() {
+
+    switch (( int ) xTaskGetApplicationTaskTag(NULL)){
+
+    vTaskSuspend(DisplayTask_hndl);
+    case A:
+        g_calc_result_A = g_running_ts_A;
+        g_calc_result_A.ms = (g_calc_result_A.end_tick_count - g_calc_result_A.start_tick_count) * portTICK_PERIOD_MS;
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Copied data into result A."); }
+        break;
+    case B:
+        g_calc_result_B = g_running_ts_B;
+        g_calc_result_B.ms = (g_calc_result_B.end_tick_count - g_calc_result_B.start_tick_count) * portTICK_PERIOD_MS;
+        
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Copied data into result B."); }
+        break;
+    }
+    vTaskResume(DisplayTask_hndl);
 }
 
 int check_for_precision(double_t value, struct pi_bounds bounds){
@@ -159,6 +176,11 @@ void CalcTaskA(struct pi_bounds * boundaries){
 
     g_running_ts_A.curr_val = 4.0;
     g_running_ts_A.iters = 1;
+    g_running_ts_A.start_tick_count = 0;
+    g_running_ts_A.end_tick_count = 0;
+    g_running_ts_A.reached_prec = false;
+
+    copy_data_into_result();
 
     vTaskSetApplicationTaskTag(NULL, (void *) method);
 
@@ -184,11 +206,14 @@ void CalcTaskA(struct pi_bounds * boundaries){
             g_running_ts_A.end_tick_count = 0;
             g_running_ts_A.curr_val = 4.0;
             g_running_ts_A.iters = 1;
+            g_running_ts_A.reached_prec = false;
             divisor = 3;
             sign = -1;
+            copy_data_into_result();
             xEventGroupClearBits(Calc_Eventgroup_A_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_A_hndl, STOPPED);
             vTaskDelay(UPDATETIME_MS/portTICK_PERIOD_MS);
+            ulTaskNotifyValueClear(DisplayTask_hndl,CLEAR_ALL);
             continue;
         case STARTING:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation A is starting.");}
@@ -208,7 +233,13 @@ void CalcTaskA(struct pi_bounds * boundaries){
             g_running_ts_A.end_tick_count = xTaskGetTickCount();
             g_running_ts_A.iters++;
 
-            if (check_for_precision(g_running_ts_A.curr_val, *boundaries)) {xTaskNotifyGive(DisplayTask_hndl);}
+            if (!g_running_ts_A.reached_prec){
+                if (check_for_precision(g_running_ts_A.curr_val, *boundaries)) {
+                    g_running_ts_A.reached_prec = true;
+                    copy_data_into_result();
+                    xTaskNotifyGive(DisplayTask_hndl);
+                    }
+            }
 
             vTaskDelay(1/portTICK_PERIOD_MS);
         }
@@ -234,30 +265,30 @@ double_t Q (double_t j) {
 }
 
 // Recursive calculation led to quick stack overflow
-// struct PQR bin_split(double_t a, double_t b){
-//     // Helper Function for Chudnovsky calculation method
-//     struct PQR pqr_vals = {0.0,0.0,0.0}, 
-//     pqr_am_vals = {0.0,0.0,0.0},
-//     pqr_mb_vals = {0.0,0.0,0.0};
+    // struct PQR bin_split(double_t a, double_t b){
+    //     // Helper Function for Chudnovsky calculation method
+    //     struct PQR pqr_vals = {0.0,0.0,0.0}, 
+    //     pqr_am_vals = {0.0,0.0,0.0},
+    //     pqr_mb_vals = {0.0,0.0,0.0};
 
-//     double_t m = 0.0;
-    
-//     if (b == (a + 1)){
-//         pqr_vals.Pab = -(6*a - 5) * (2*a - 1) * (6*a - 1);
-//         pqr_vals.Qab = 10939058860032000 * pow(a,3.0);
-//         pqr_vals.Rab = pqr_vals.Pab * (545140134*a + 13591409);
-//     } else {
-//         m = (a + b) / 2.0;
-//         pqr_am_vals = bin_split(a, m);
-//         pqr_mb_vals = bin_split(m, b);
+    //     double_t m = 0.0;
 
-//         pqr_vals.Pab = pqr_am_vals.Pab * pqr_mb_vals.Pab;
-//         pqr_vals.Qab = pqr_am_vals.Qab * pqr_mb_vals.Qab;
-//         pqr_vals.Rab = pqr_mb_vals.Qab * pqr_am_vals.Rab + pqr_mb_vals.Rab * pqr_am_vals.Pab;
-//     }
-//     if (CALC_DEBUG) {ESP_LOGI(TAG, "bin_split values: a:%.4lf    b:%.4lf  m:%.4lf", a, b, m);}
-//     return pqr_vals;
-// }
+    //     if (b == (a + 1)){
+    //         pqr_vals.Pab = -(6*a - 5) * (2*a - 1) * (6*a - 1);
+    //         pqr_vals.Qab = 10939058860032000 * pow(a,3.0);
+    //         pqr_vals.Rab = pqr_vals.Pab * (545140134*a + 13591409);
+    //     } else {
+    //         m = (a + b) / 2.0;
+    //         pqr_am_vals = bin_split(a, m);
+    //         pqr_mb_vals = bin_split(m, b);
+
+    //         pqr_vals.Pab = pqr_am_vals.Pab * pqr_mb_vals.Pab;
+    //         pqr_vals.Qab = pqr_am_vals.Qab * pqr_mb_vals.Qab;
+    //         pqr_vals.Rab = pqr_mb_vals.Qab * pqr_am_vals.Rab + pqr_mb_vals.Rab * pqr_am_vals.Pab;
+    //     }
+    //     if (CALC_DEBUG) {ESP_LOGI(TAG, "bin_split values: a:%.4lf    b:%.4lf  m:%.4lf", a, b, m);}
+    //     return pqr_vals;
+    // }
 
 
 void CalcTaskB(struct pi_bounds * boundaries){
@@ -265,10 +296,16 @@ void CalcTaskB(struct pi_bounds * boundaries){
     //Notifies Logic Task when it has reached the requested precision
     g_running_ts_B.curr_val = 0.0;
     g_running_ts_B.iters = 1;
-    EventBits_t state = STOPPED;
+    g_running_ts_B.start_tick_count = 0;
+    g_running_ts_B.end_tick_count = 0;
+    g_running_ts_B.reached_prec = false;
+
+    copy_data_into_result();
+    
     double_t running_prod = 1.0, running_sum = 0.0;
     double_t dividend = 426880 * sqrt(10005);
 
+    EventBits_t state = STOPPED;
     xEventGroupSetBits(Calc_Eventgroup_B_hndl, state);
 
     Calculation_Method method = B;
@@ -299,9 +336,11 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.iters = 1;
             running_prod = 1.0;
             running_sum = 0.0;
+            copy_data_into_result();
             xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             vTaskDelay(UPDATETIME_MS/portTICK_PERIOD_MS);
+            ulTaskNotifyValueClear(DisplayTask_hndl,CLEAR_ALL);
             continue;
 
         case STARTING:
@@ -323,10 +362,16 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.end_tick_count = xTaskGetTickCount();
             g_running_ts_B.iters++;
 
-            if (check_for_precision(g_running_ts_B.curr_val, *boundaries)) {xTaskNotifyGive(DisplayTask_hndl);}
+            if (!g_running_ts_B.reached_prec){
+                if (check_for_precision(g_running_ts_B.curr_val, *boundaries)) {
+                    g_running_ts_B.reached_prec = true;
+                    copy_data_into_result();
+                    xTaskNotifyGive(DisplayTask_hndl);
+                    }
+            }
 
             if (running_prod < 0.00000000000000000000000000001) {
-                if (CALC_DEBUG) {ESP_LOGI(TAG, "Stopping Calc Task B due to running product reaching too low");}
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Stopping Calc Task B due to running product reaching limit.");}
                 xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
                 xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             }
@@ -447,7 +492,6 @@ void LogicTask(void* param){
         //Starts calculation method
         case SW0_SHORT:
             start_calc_method(curr_method);
-            ulTaskNotifyValueClear(DisplayTask_hndl,CLEAR_ALL);
             break;
         //Halts calculation method
         case SW1_SHORT:
@@ -467,7 +511,7 @@ void LogicTask(void* param){
 void DisplayTask(void* param) {
     //Draws Diisplay content
     EventBits_t calcA_state = STOPPED, calcB_state = STOPPED;
-    struct timestamp curr_pi_calcA_data = {0,0,0,0,0}, curr_pi_calcB_data = {0,0,0,0,0}, calc_data = {0,0,0,0,0};
+    struct timestamp curr_pi_calcA_data = {0,0,0,0,0, false}, curr_pi_calcB_data = {0,0,0,0,0, false};
 
     char methodA_status_string[60],
     methodB_status_string[60],
@@ -491,7 +535,7 @@ void DisplayTask(void* param) {
         lcdDrawString(fx32M, 10, 30, "ESP32 Pi Calcualtion", GREEN);
         lcdDrawString(fx24M, 10, 80, "by Nathanael", GREEN);
 
-        prec_reached = ulTaskNotifyTake(false, 500/portTICK_PERIOD_MS);
+        ulTaskNotifyTake(false, 500/portTICK_PERIOD_MS);
         //vTaskDelay(500/portTICK_PERIOD_MS);
 
         calcA_state = xEventGroupGetBits(Calc_Eventgroup_A_hndl);
@@ -515,12 +559,11 @@ void DisplayTask(void* param) {
             sprintf((char *)methodA_status_string, "Methode A aktiv");
             sprintf((char *)methodA_resetted_string, " ");
             lcdDrawString(fx16M, 30, 110, &methodA_status_string[0], CYAN);
-            if (prec_reached) {
-                if (prec_reached == 1) {calc_data = curr_pi_calcA_data;}
-                sprintf((char *)precA_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", calc_data.ms);
+            if (g_calc_result_A.reached_prec) {
+                sprintf((char *)precA_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", g_calc_result_A.ms);
                 lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], GREEN);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A reached precision!");}
-                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", calc_data.curr_val, calc_data.ms, calc_data.iters);}
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", g_calc_result_A.curr_val, g_calc_result_A.ms, g_calc_result_A.iters);}
             } else {
                 sprintf((char *)precA_reached_string, "Der Wert ist noch zu ungenau.");
                 lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], RED);
@@ -543,12 +586,11 @@ void DisplayTask(void* param) {
             sprintf((char *)methodB_status_string, "Methode B aktiv");
             sprintf((char *)methodB_resetted_string, " ");
             lcdDrawString(fx16M, 80, 110, &methodB_status_string[0], GREEN);
-            if (prec_reached) {
-                if (prec_reached == 1) {calc_data = curr_pi_calcB_data;}
-                sprintf((char *)precB_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", calc_data.ms);
+            if (g_calc_result_B.reached_prec) {
+                sprintf((char *)precB_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", g_calc_result_B.ms);
                 lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], GREEN);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method B reached precision!");}
-                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", calc_data.curr_val, calc_data.ms, calc_data.iters);}
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", g_calc_result_B.curr_val, g_calc_result_B.ms, g_calc_result_B.iters);}
             } else {
                 sprintf((char *)precB_reached_string, "Der Wert ist noch zu ungenau.");
                 lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], RED);
@@ -576,7 +618,7 @@ void DisplayTask(void* param) {
 
 void app_main()
 {
-    struct pi_bounds prec = PI_12DIGIT;
+    struct pi_bounds prec = PI_4DIGIT;
 
     //Initialize Eduboard2 BSP
     eduboard2_init();
