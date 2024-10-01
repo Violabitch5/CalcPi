@@ -106,24 +106,34 @@ typedef enum {
 struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
     // stops the indicated task and fetches the data
     struct timestamp current_time = {0, 0, 0, 0, 0};
+    eTaskState curr_state = 0;
 
-    vTaskSuspend(CalcTask_hndl);
+    curr_state = eTaskGetState(CalcTask_hndl);
 
+    if ((curr_state == eRunning) || (curr_state == eReady)) { 
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Suspending Task to fetch data."); }
+        vTaskSuspend(CalcTask_hndl); 
+        }
 
     switch (( int ) xTaskGetApplicationTaskTag(CalcTask_hndl)){
     case A:
         current_time.curr_val = g_running_ts_A.curr_val;
         current_time.ms = (g_running_ts_A.end_tick_count - g_running_ts_A.start_tick_count) * portTICK_PERIOD_MS;
         current_time.iters = g_running_ts_A.iters;
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Taking Data from A."); }
         break;
     case B:
         current_time.curr_val = g_running_ts_B.curr_val;
         current_time.ms = (g_running_ts_B.end_tick_count - g_running_ts_B.start_tick_count) * portTICK_PERIOD_MS;
         current_time.iters = g_running_ts_B.iters;
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Taking Data from B."); }
         break;
     }
     
-    vTaskResume(CalcTask_hndl);
+    if ((curr_state == eRunning) || (curr_state == eReady)) { 
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "Resuming Task after fetching data."); }
+        vTaskResume(CalcTask_hndl); 
+        }
 
     return current_time;
 }
@@ -188,7 +198,7 @@ void CalcTaskA(struct pi_bounds * boundaries){
             break;
         case RUNNING:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation A is running. Current value: %.19lf", g_running_ts_A.curr_val);}
-            if (CALC_DEBUG) {ESP_LOGI(TAG, "running sum: %1.15lf", running_sum);}
+            //if (CALC_DEBUG) {ESP_LOGI(TAG, "running sum: %1.15lf", running_sum);}
 
             running_sum = sign * (dividend/divisor);
             g_running_ts_A.curr_val += running_sum;
@@ -205,39 +215,59 @@ void CalcTaskA(struct pi_bounds * boundaries){
     }
 }
 
-struct PQR bin_split(double_t a, double_t b){
-    // Helper Function for Chudnovsky calculation method
-    struct PQR pqr_vals = {0.0,0.0,0.0}, 
-    pqr_am_vals = {0.0,0.0,0.0},
-    pqr_mb_vals = {0.0,0.0,0.0};
+/// Helper Function for Chudnovsky calculation method
+double_t P (double_t j) {
+    double_t prod;
 
-    double_t m = 0.0;
-    
-    if (b == (a + 1)){
-        pqr_vals.Pab = -(6*a - 5) * (2*a - 1) * (6*a - 1);
-        pqr_vals.Qab = 10939058860032000 * pow(a,3.0);
-        pqr_vals.Rab = pqr_vals.Pab * (545140134*a + 13591409);
-    } else {
-        m = (a + b) / 2.0;
-        pqr_am_vals = bin_split(a, m);
-        pqr_mb_vals = bin_split(m, b);
+    prod = -(6.0*j - 5.0) * (2.0*j - 1.0) * (6.0*j - 1.0);
 
-        pqr_vals.Pab = pqr_am_vals.Pab * pqr_mb_vals.Pab;
-        pqr_vals.Qab = pqr_am_vals.Qab * pqr_mb_vals.Qab;
-        pqr_vals.Rab = pqr_mb_vals.Qab * pqr_am_vals.Rab + pqr_mb_vals.Rab * pqr_am_vals.Pab;
-    }
-    if (CALC_DEBUG) {ESP_LOGI(TAG, "bin_split values: a:%.4lf    b:%.4lf  m:%.4lf", a, b, m);}
-    return pqr_vals;
+    return prod;
 }
+
+/// Helper Function for Chudnovsky calculation method
+double_t Q (double_t j) {
+    double_t prod;
+
+    prod = 10939058860032000 * pow(j,3.0);
+    
+    return prod;
+}
+
+// Recursive calculation led to quick stack overflow
+// struct PQR bin_split(double_t a, double_t b){
+//     // Helper Function for Chudnovsky calculation method
+//     struct PQR pqr_vals = {0.0,0.0,0.0}, 
+//     pqr_am_vals = {0.0,0.0,0.0},
+//     pqr_mb_vals = {0.0,0.0,0.0};
+
+//     double_t m = 0.0;
+    
+//     if (b == (a + 1)){
+//         pqr_vals.Pab = -(6*a - 5) * (2*a - 1) * (6*a - 1);
+//         pqr_vals.Qab = 10939058860032000 * pow(a,3.0);
+//         pqr_vals.Rab = pqr_vals.Pab * (545140134*a + 13591409);
+//     } else {
+//         m = (a + b) / 2.0;
+//         pqr_am_vals = bin_split(a, m);
+//         pqr_mb_vals = bin_split(m, b);
+
+//         pqr_vals.Pab = pqr_am_vals.Pab * pqr_mb_vals.Pab;
+//         pqr_vals.Qab = pqr_am_vals.Qab * pqr_mb_vals.Qab;
+//         pqr_vals.Rab = pqr_mb_vals.Qab * pqr_am_vals.Rab + pqr_mb_vals.Rab * pqr_am_vals.Pab;
+//     }
+//     if (CALC_DEBUG) {ESP_LOGI(TAG, "bin_split values: a:%.4lf    b:%.4lf  m:%.4lf", a, b, m);}
+//     return pqr_vals;
+// }
 
 
 void CalcTaskB(struct pi_bounds * boundaries){
     //iterative calculation via Chudnovsky method
     //Notifies Logic Task when it has reached the requested precision
-    struct PQR pqr_n_vals = {0.0,0.0,0.0};
     g_running_ts_B.curr_val = 0.0;
     g_running_ts_B.iters = 1;
     EventBits_t state = STOPPED;
+    double_t running_prod = 1.0, running_sum = 0.0;
+    double_t dividend = 426880 * sqrt(10005);
 
     xEventGroupSetBits(Calc_Eventgroup_B_hndl, state);
 
@@ -267,6 +297,8 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.end_tick_count = 0;
             g_running_ts_B.curr_val = 0.0;
             g_running_ts_B.iters = 1;
+            running_prod = 1.0;
+            running_sum = 0.0;
             xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             vTaskDelay(UPDATETIME_MS/portTICK_PERIOD_MS);
@@ -281,21 +313,24 @@ void CalcTaskB(struct pi_bounds * boundaries){
 
         case RUNNING:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation B is running. Current value:%.19lf", g_running_ts_B.curr_val);}
+            if (CALC_DEBUG) {ESP_LOGI(TAG, "Running SUM: %.50lf    Running PROD: %.50lf", running_sum, running_prod);}
 
-            pqr_n_vals = bin_split(1.0, g_running_ts_B.iters + 1);
-            g_running_ts_B.curr_val = (426880 * sqrt(10005) * pqr_n_vals.Qab) / (13591409 * pqr_n_vals.Qab + pqr_n_vals.Rab);
+            running_prod *= (double_t) P(g_running_ts_B.iters) / Q(g_running_ts_B.iters);
+            running_sum += (double_t) running_prod * (545140134 * g_running_ts_B.iters + 13591409);
+
+            g_running_ts_B.curr_val = (double_t) dividend / (13591409 + running_sum);
             
             g_running_ts_B.end_tick_count = xTaskGetTickCount();
             g_running_ts_B.iters++;
 
             if (check_for_precision(g_running_ts_B.curr_val, *boundaries)) {xTaskNotifyGive(DisplayTask_hndl);}
 
-            //This calculation turned out to be so fast that it would cause a stack overflow in the ESP32 within a few iterations, so it now just stops after 4.
-            if (g_running_ts_B.iters == 3) {
+            if (running_prod < 0.00000000000000000000000000001) {
+                if (CALC_DEBUG) {ESP_LOGI(TAG, "Stopping Calc Task B due to running product reaching too low");}
                 xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
-                xEventGroupSetBits(Calc_Eventgroup_B_hndl, RESETTING);
+                xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             }
-
+            
             vTaskDelay(1/portTICK_PERIOD_MS);
         }   
     } 
@@ -373,10 +408,12 @@ void reset_calc_method(Calculation_Method method){
     case A:
         xEventGroupClearBits(Calc_Eventgroup_A_hndl, CLEAR_ALL);
         xEventGroupSetBits(Calc_Eventgroup_A_hndl, RESETTING);
+        if (eTaskGetState(CalcTaskA_hndl) == eSuspended) { vTaskResume(CalcTaskA_hndl); }
         break;
     case B:
         xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
         xEventGroupSetBits(Calc_Eventgroup_B_hndl, RESETTING);
+        if (eTaskGetState(CalcTaskB_hndl) == eSuspended) { vTaskResume(CalcTaskB_hndl); }
     default:
         break;
     }
@@ -395,6 +432,7 @@ void LogicTask(void* param){
         btns = xEventGroupWaitBits(Btn_Eventgroup_hndl, ALL_BTN_EVENTS, true, false, portMAX_DELAY);
         switch (btns)
         {
+        //Switch calculation method
         case SW3_SHORT:
             if (curr_method == A) {
                 xEventGroupClearBits(MethodInfo_Eventgroup_hndl, CLEAR_ALL);
@@ -406,13 +444,16 @@ void LogicTask(void* param){
                 if (DEBUG_LOGS) {ESP_LOGI(TAG,"Current calculation method: A");}
             }
             break;
+        //Starts calculation method
         case SW0_SHORT:
             start_calc_method(curr_method);
             ulTaskNotifyValueClear(DisplayTask_hndl,CLEAR_ALL);
             break;
+        //Halts calculation method
         case SW1_SHORT:
             stop_calc_method(curr_method);
             break;
+        //Resets calculation method
         case SW2_SHORT:
             reset_calc_method(curr_method);
             break;
@@ -535,7 +576,7 @@ void DisplayTask(void* param) {
 
 void app_main()
 {
-    struct pi_bounds prec = PI_15DIGIT;
+    struct pi_bounds prec = PI_12DIGIT;
 
     //Initialize Eduboard2 BSP
     eduboard2_init();
