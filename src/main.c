@@ -17,6 +17,7 @@
 #define TAG "CALCULATIONofPI"
 
 #define UPDATETIME_MS 100
+#define CALCITER_TIME_MS 0
 
 #define NUM_BTNS 4
 
@@ -217,7 +218,7 @@ void CalcTaskA(struct pi_bounds * boundaries){
             continue;
         case STARTING:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation A is starting.");}
-            g_running_ts_A.start_tick_count = xTaskGetTickCount();
+            if (g_running_ts_A.iters == 1) { g_running_ts_A.start_tick_count = xTaskGetTickCount(); }
             xEventGroupClearBits(Calc_Eventgroup_A_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_A_hndl, RUNNING);
             break;
@@ -241,7 +242,7 @@ void CalcTaskA(struct pi_bounds * boundaries){
                     }
             }
 
-            vTaskDelay(1/portTICK_PERIOD_MS);
+            vTaskDelay(CALCITER_TIME_MS/portTICK_PERIOD_MS);
         }
     }
 }
@@ -334,6 +335,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
             g_running_ts_B.end_tick_count = 0;
             g_running_ts_B.curr_val = 0.0;
             g_running_ts_B.iters = 1;
+            g_running_ts_B.reached_prec = false;
             running_prod = 1.0;
             running_sum = 0.0;
             copy_data_into_result();
@@ -345,7 +347,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
 
         case STARTING:
             if (CALC_DEBUG) {ESP_LOGI(TAG, "Calculation B is starting.");}
-            g_running_ts_A.start_tick_count = xTaskGetTickCount();
+            if (g_running_ts_B.iters == 1) { g_running_ts_B.start_tick_count = xTaskGetTickCount(); }
             xEventGroupClearBits(Calc_Eventgroup_B_hndl, CLEAR_ALL);
             xEventGroupSetBits(Calc_Eventgroup_B_hndl, RUNNING);
             break;
@@ -376,7 +378,7 @@ void CalcTaskB(struct pi_bounds * boundaries){
                 xEventGroupSetBits(Calc_Eventgroup_B_hndl, STOPPED);
             }
             
-            vTaskDelay(1/portTICK_PERIOD_MS);
+            vTaskDelay(CALCITER_TIME_MS/portTICK_PERIOD_MS);
         }   
     } 
 }
@@ -510,7 +512,7 @@ void LogicTask(void* param){
 
 void DisplayTask(void* param) {
     //Draws Diisplay content
-    EventBits_t calcA_state = STOPPED, calcB_state = STOPPED;
+    EventBits_t calcA_state = STOPPED, calcB_state = STOPPED, curr_method = A;
     struct timestamp curr_pi_calcA_data = {0,0,0,0,0, false}, curr_pi_calcB_data = {0,0,0,0,0, false};
 
     char methodA_status_string[60],
@@ -540,6 +542,7 @@ void DisplayTask(void* param) {
 
         calcA_state = xEventGroupGetBits(Calc_Eventgroup_A_hndl);
         calcB_state = xEventGroupGetBits(Calc_Eventgroup_B_hndl);
+        curr_method = xEventGroupGetBits(MethodInfo_Eventgroup_hndl);
         curr_pi_calcA_data = GetCurrTimestamp(CalcTaskA_hndl);
         curr_pi_calcB_data = GetCurrTimestamp(CalcTaskB_hndl);
 
@@ -549,70 +552,77 @@ void DisplayTask(void* param) {
         if (DISPLAY_DEBUG) {ESP_LOGI(TAG,"CalcA_bits: %li",calcA_state);}
         if (DISPLAY_DEBUG) {ESP_LOGI(TAG,"CalcB_bits: %li",calcB_state);}
 
+        if (curr_method == A) {
+            lcdDrawString(fx24M, 10, 110, "Methode A (Madhava/Leibniz)", BLUE);
+            lcdDrawString(fx24M, 10, 200, "Methode B (Chudnovsky)", GRAY);
+        } else {
+            lcdDrawString(fx24M, 10, 110, "Methode A (Madhava/Leibniz)", GRAY);
+            lcdDrawString(fx24M, 10, 200, "Methode B (Chudnovsky)", BLUE);
+        }
+
         switch (calcA_state)
         {
         case STOPPED:
-            sprintf((char *)methodA_status_string, "Methode A deaktiviert");
-            lcdDrawString(fx16M, 30, 110, &methodA_status_string[0], GRAY);
+            sprintf((char *)methodA_status_string, "Methode A inaktiv");
+            lcdDrawString(fx16M, 10, 125, &methodA_status_string[0], GRAY);
             break;
         case RUNNING:
-            sprintf((char *)methodA_status_string, "Methode A aktiv");
-            sprintf((char *)methodA_resetted_string, " ");
-            lcdDrawString(fx16M, 30, 110, &methodA_status_string[0], CYAN);
+            sprintf((char *)methodA_status_string, "Methode A berechnet...");
+            lcdDrawString(fx16M, 10, 125, &methodA_status_string[0], CYAN);
+            break;
+        }
+
+        if (curr_pi_calcA_data.iters > 1){
             if (g_calc_result_A.reached_prec) {
                 sprintf((char *)precA_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", g_calc_result_A.ms);
-                lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], GREEN);
+                lcdDrawString(fx16M, 10, 140, &precA_reached_string[0], GREEN);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A reached precision!");}
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", g_calc_result_A.curr_val, g_calc_result_A.ms, g_calc_result_A.iters);}
             } else {
                 sprintf((char *)precA_reached_string, "Der Wert ist noch zu ungenau.");
-                lcdDrawString(fx16M, 30, 130, &precA_reached_string[0], RED);
+                lcdDrawString(fx16M, 10, 140, &precA_reached_string[0], RED);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method A has not yet reached precision...");}
-            };
-            break;
-        case RESETTING:
-            sprintf((char *)methodA_resetted_string, "Methode A zurueckgesetzt");
-            break;
+            }
         }
-        lcdDrawString(fx16M, 30, 90, &methodA_resetted_string[0], CYAN);
+
+        sprintf((char *)curr_valueA_string, "Aktueller A Wert:  %.20lf", curr_pi_calcA_data.curr_val);
+        sprintf((char *)curr_timeA_string, "Aktuelle Berechnungszeit A: %li ms", curr_pi_calcA_data.ms);
+
+        lcdDrawString(fx16M, 10, 155, &curr_valueA_string[0], WHITE);
+        lcdDrawString(fx16M, 10, 170, &curr_timeA_string[0], WHITE);
 
         switch (calcB_state)
         {
         case STOPPED:
-            sprintf((char *)methodB_status_string, "Methode B deaktiviert");
-            lcdDrawString(fx16M, 80, 110, &methodB_status_string[0], RED);
+            sprintf((char *)methodB_status_string, "Methode B inaktiv");
+            lcdDrawString(fx16M, 10, 215, &methodB_status_string[0], GRAY);
             break;
         case RUNNING:
-            sprintf((char *)methodB_status_string, "Methode B aktiv");
-            sprintf((char *)methodB_resetted_string, " ");
-            lcdDrawString(fx16M, 80, 110, &methodB_status_string[0], GREEN);
+            sprintf((char *)methodB_status_string, "Methode B berechnet...");
+            lcdDrawString(fx16M, 10, 215, &methodB_status_string[0], GREEN);
+            break;
+        }
+
+        if (curr_pi_calcB_data.iters > 1){
             if (g_calc_result_B.reached_prec) {
                 sprintf((char *)precB_reached_string, "Die Genauigkeit wurde nach %li ms erreicht!", g_calc_result_B.ms);
-                lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], GREEN);
+                lcdDrawString(fx16M, 10, 230, &precB_reached_string[0], GREEN);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method B reached precision!");}
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Value: %.15lf, Time: %8li ms, iterations: %12li", g_calc_result_B.curr_val, g_calc_result_B.ms, g_calc_result_B.iters);}
             } else {
                 sprintf((char *)precB_reached_string, "Der Wert ist noch zu ungenau.");
-                lcdDrawString(fx16M, 80, 130, &precB_reached_string[0], RED);
+                lcdDrawString(fx16M, 10, 230, &precB_reached_string[0], RED);
                 if (CALC_DEBUG) {ESP_LOGI(TAG, "Method B has not yet reached precision...");}
-            };
-            break;
-        case RESETTING:
-            sprintf((char *)methodB_resetted_string, "Methode B zurueckgesetzt");
-            break;
+            }
         }
-        lcdDrawString(fx16M, 30, 90, &methodB_resetted_string[0], CYAN);
 
-        sprintf((char *)curr_valueA_string, "Aktueller A Wert:/t%lf", curr_pi_calcA_data.curr_val);
-        sprintf((char *)curr_timeA_string, "Aktuelle Berechnungszeit A:/t%li ms", curr_pi_calcA_data.ms);
-        sprintf((char *)curr_valueB_string, "Aktueller B Wert:/t%lf", curr_pi_calcB_data.curr_val);
-        sprintf((char *)curr_timeB_string, "Aktuelle Berechnungszeit B:/t%li ms", curr_pi_calcB_data.ms);
+        sprintf((char *)curr_valueB_string, "Aktueller B Wert:  %.20lf", curr_pi_calcB_data.curr_val);
+        sprintf((char *)curr_timeB_string, "Aktuelle Berechnungszeit B: %li ms", curr_pi_calcB_data.ms);
 
-        lcdDrawString(fx16M, 80, 160, &curr_valueB_string[0], WHITE);
-        lcdDrawString(fx16M, 80, 190, &curr_timeB_string[0], WHITE);
+        lcdDrawString(fx16M, 10, 245, &curr_valueB_string[0], WHITE);
+        lcdDrawString(fx16M, 10, 260, &curr_timeB_string[0], WHITE);
 
-        lcdDrawString(fx16M, 30, 160, &curr_valueA_string[0], WHITE);
-        lcdDrawString(fx16M, 30, 190, &curr_timeA_string[0], WHITE);
+        lcdUpdateVScreen();
     }
 }
 
