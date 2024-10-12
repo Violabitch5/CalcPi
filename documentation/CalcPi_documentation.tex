@@ -15,6 +15,12 @@
 \usepackage{lastpage}
 \usepackage{fancyhdr}
 \usepackage{csvsimple}
+\hypersetup{
+	colorlinks,
+	linkcolor={blue!50!black},
+	citecolor={blue!50!black},
+	urlcolor={blue!80!black}
+}
 
 
 \definecolor{codegreen}{rgb}{0,0.6,0}
@@ -193,7 +199,7 @@
 	Der DisplayTask nutzt die Funktion \textit{GetCurrTimestamp} um den jeweiligen Berechnungstask anzuhalten, die aktuellen Daten abzugreifen und dann wieder zu starten. Für die Anzeige der Resultate werden die Daten gelesen sobald die Genauigkeit erreicht wurde und der jeweilige Berechnungstask nicht das Resultat timestamp beschreibt. Abbildung \ref{fig:taskoverview} zeigt die Schnittstellen zwischen den Task sowie die Struktur des Timestamp structs.%\newpage
 	\begin{sidewaysfigure}[h]
 		\centering
-		\includegraphics[width=1.1\linewidth]{diagrams/TaskOverview}
+		\includegraphics[width=1\linewidth]{diagrams/TaskOverview}
 		\caption[Taskübersicht]{Die Tasks kommunizieren jeweils über Eventgroups oder globale Variabeln.}
 		\label{fig:taskoverview}
 	\end{sidewaysfigure}
