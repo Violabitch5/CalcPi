@@ -16,13 +16,14 @@
 
 #define TAG "CALCULATIONofPI"
 
-#define UPDATETIME_MS 100
-#define CALCITER_TIME_MS 0
+#define UPDATETIME_MS 100       //general update time
+#define CALCITER_TIME_MS 0      //iteration speed for calculation tasks
 
 #define NUM_BTNS 4
 
-#define STATE_MASK 0xFF
+#define STATE_MASK 0xFF         
 #define ACTION_MASK 0xFF00
+
 #define CLEAR_ALL 0xFFFFFF
 
 #define DEBUG_LOGS (false)
@@ -51,7 +52,7 @@ typedef enum {
     STOPPING        = 1 << 4,
     WRITING_RESULT  = 1 << 5,
     ANY_STATE   = STOPPED | STARTING | RUNNING | RESETTING | STOPPING
-} calc_state;
+} calc_state;       //describes different states of calculation task
 
 struct pi_bounds {
     double_t upper;
@@ -81,7 +82,7 @@ struct timestamp{
     u_int32_t ms;
     u_int32_t iters;
     bool reached_prec;
-} g_running_ts_A, g_running_ts_B, g_calc_result_A, g_calc_result_B;
+} g_running_ts_A, g_running_ts_B, g_calc_result_A, g_calc_result_B;     //Main struct for holding various calculation data
 
 static TaskHandle_t
     DisplayTask_hndl = NULL,
@@ -91,10 +92,10 @@ static TaskHandle_t
     CalcTaskB_hndl = NULL;
 
 EventGroupHandle_t
-    Calc_Eventgroup_A_hndl = NULL,
-    Calc_Eventgroup_B_hndl = NULL,
-    Btn_Eventgroup_hndl = NULL,
-    MethodInfo_Eventgroup_hndl = NULL;
+    Calc_Eventgroup_A_hndl = NULL,          // Contains state of Task A, there can only be ONE state at a time
+    Calc_Eventgroup_B_hndl = NULL,          // same for B
+    Btn_Eventgroup_hndl = NULL,             // used to trigger Logic task to process button inputs
+    MethodInfo_Eventgroup_hndl = NULL;      // used to show which Method is currently active
 
 
 typedef enum {
@@ -103,7 +104,7 @@ typedef enum {
 } Calculation_Method;
 
 struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
-    // stops the indicated task and fetches the data
+    // signals the indicated task to stop, waits for that to happen, fetches the data and then sets the task to its previous state
     struct timestamp current_timestamp = {0, 0, 0, 0, 0, false};
     EventBits_t calc_state = STOPPING, wait_state = 0;
 
@@ -171,7 +172,7 @@ struct timestamp GetCurrTimestamp(TaskHandle_t CalcTask_hndl) {
 }
 
 void copy_data_into_result() {
-
+    //copies running data into global result struct. This should only be called after the calling task is set to WRITING_RESULT
     switch (( int ) xTaskGetApplicationTaskTag(NULL)){
 
     case A:
@@ -184,6 +185,7 @@ void copy_data_into_result() {
         g_calc_result_B.ms = (g_calc_result_B.end_tick_count - g_calc_result_B.start_tick_count) * portTICK_PERIOD_MS;
         
         if (DEBUG_LOGS) { ESP_LOGI(TAG, "Copied data into result B."); }
+        if (DEBUG_LOGS) { ESP_LOGI(TAG, "start ticks: %li   end ticks: %li", g_calc_result_B.start_tick_count, g_calc_result_B.end_tick_count ); }
         break;
     default:
         if (DEBUG_LOGS) { ESP_LOGI(TAG, "Could not copy results due to unknown Task Tag"); }
@@ -193,6 +195,8 @@ void copy_data_into_result() {
 }
 
 int check_for_precision(double_t value, struct pi_bounds bounds){
+    //checks a value against the provided precision bounds
+
     if (CALC_DEBUG) {ESP_LOGI(TAG,"Current lower bound: %.15lf, upper: %.15lf", bounds.lower, bounds.upper);}
     if ((value < bounds.upper) && (value > bounds.lower)){
         return 1;
@@ -203,7 +207,8 @@ int check_for_precision(double_t value, struct pi_bounds bounds){
 
 void CalcTaskA(struct pi_bounds * boundaries){
     // iterative calculation via Madhava–Leibniz
-    // Notifies Logic Task when it has reached the requested precision
+    // Writes data into result once it has reached requested precision
+
     double_t divisor = 3, dividend = 4, sign = -1, running_sum = 0;
     
     Calculation_Method method = A;
@@ -292,8 +297,10 @@ void CalcTaskA(struct pi_bounds * boundaries){
     }
 }
 
-/// Helper Function for Chudnovsky calculation method
+
 double_t P (double_t j) {
+    /// Helper Function for Chudnovsky calculation method
+
     double_t prod;
 
     prod = -(6.0*j - 5.0) * (2.0*j - 1.0) * (6.0*j - 1.0);
@@ -301,8 +308,10 @@ double_t P (double_t j) {
     return prod;
 }
 
-/// Helper Function for Chudnovsky calculation method
+
 double_t Q (double_t j) {
+    /// Helper Function for Chudnovsky calculation method
+
     double_t prod;
 
     prod = 10939058860032000 * pow(j,3.0);
@@ -339,7 +348,7 @@ double_t Q (double_t j) {
 
 void CalcTaskB(struct pi_bounds * boundaries){
     //iterative calculation via Chudnovsky method
-    //Notifies Logic Task when it has reached the requested precision
+    // Writes data into result once it has reached requested precision
 
     double_t running_prod = 1.0, running_sum = 0.0;
     double_t dividend = 426880 * sqrt(10005);
@@ -473,6 +482,7 @@ void BtnTask(void* param){
 }
 
 void start_calc_method(Calculation_Method method){
+    // Helper function to start up a calculation Task
     switch (method)
     {
     case A:
@@ -488,6 +498,8 @@ void start_calc_method(Calculation_Method method){
 }
 
 void stop_calc_method(Calculation_Method method){
+    // Helper function to stop a calculation Task
+
     switch (method)
     {
     case A:
@@ -503,6 +515,8 @@ void stop_calc_method(Calculation_Method method){
 }
 
 void reset_calc_method(Calculation_Method method){
+    // Helper function to reset a calculation Task
+
     switch (method)
     {
     case A:
@@ -519,6 +533,7 @@ void reset_calc_method(Calculation_Method method){
 
 void LogicTask(void* param){
     //Waits for and handles all btn state changes
+
     EventBits_t btns = 0, curr_method = 0;
 
     xEventGroupSetBits(MethodInfo_Eventgroup_hndl,A);
@@ -562,7 +577,8 @@ void LogicTask(void* param){
 }
 
 void DisplayTask(void* param) {
-    //Draws Diisplay content
+    //Draws Diisplay content depending on task states
+    
     EventBits_t calcA_state = STOPPING, calcB_state = STOPPING, curr_method = A, display_state = RUNNING;
     struct timestamp curr_pi_calcA_data = {0,0,0,0,0, false}, curr_pi_calcB_data = {0,0,0,0,0, false};
 
@@ -707,7 +723,7 @@ void app_main()
     //Create Tasks
     xTaskCreate(BtnTask,"Button Task", 2*2048,NULL,10,&ButtonTask_hndl);
     xTaskCreate(LogicTask,"Logic Task",2*2048,NULL,5,&LogicTask_hndl);
-    xTaskCreate(CalcTaskA,"Calculation Task A",2*2048,&prec,2,&CalcTaskA_hndl);
+    xTaskCreate(CalcTaskA,"Calculation Task A",8*2048,&prec,2,&CalcTaskA_hndl);
     xTaskCreate(CalcTaskB,"Calculation Task B",8*2048,&prec,2,&CalcTaskB_hndl);
     xTaskCreate(DisplayTask,"Display Taks", 2*2048,NULL,4,&DisplayTask_hndl);
 
